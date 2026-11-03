@@ -1,34 +1,52 @@
 import { initTRPC, TRPCError } from '@trpc/server';
+import { z } from 'zod';
 import type { Context } from './context.js';
 
-const t = initTRPC.context<Context>().create();
+const t = initTRPC.context<Context>().create({
+  // Adds a flattened Zod error to every BAD_REQUEST caused by input validation.
+  errorFormatter({ shape, error }) {
+    const cause = error.cause;
+    return {
+      ...shape,
+      data: {
+        ...shape.data,
+        // Typed as a string-keyed record so clients can read fieldErrors.title etc.
+        zodError:
+          cause instanceof z.ZodError
+            ? z.flattenError(cause as z.ZodError<Record<string, unknown>>)
+            : null,
+      },
+    };
+  },
+});
 
 export const router = t.router;
-export const publicProcedure = t.procedure;
 export const middleware = t.middleware;
+export const createCallerFactory = t.createCallerFactory;
 
-// Logging and timing middleware
-const loggerMiddleware = middleware(async (opts) => {
-  const start = Date.now();
-  const result = await opts.next();
-  const durationMs = Date.now() - start;
-  console.log(`[tRPC] ${opts.type} '${opts.path}': ${result.ok ? 'OK' : 'ERROR'} (${durationMs}ms)`);
+const timing = t.middleware(async ({ path, type, next }) => {
+  const start = performance.now();
+  const result = await next();
+  const ms = (performance.now() - start).toFixed(1);
+  if (process.env.NODE_ENV !== 'test') {
+    console.log(`[trpc] ${type} ${path} ${result.ok ? 'ok' : 'error'} ${ms}ms`);
+  }
   return result;
 });
 
-export const loggedProcedure = publicProcedure.use(loggerMiddleware);
+export const publicProcedure = t.procedure.use(timing);
 
-// Protected procedure requiring authentication
-export const protectedProcedure = loggedProcedure.use(async (opts) => {
-  if (!opts.ctx.user) {
-    throw new TRPCError({
-      code: 'UNAUTHORIZED',
-      message: 'You must provide a valid Bearer token to access this procedure'
-    });
+// Narrows ctx.user from `User | null` to `User` for every procedure built on it.
+export const protectedProcedure = publicProcedure.use(({ ctx, next }) => {
+  if (!ctx.user) {
+    throw new TRPCError({ code: 'UNAUTHORIZED', message: 'Send a Bearer token' });
   }
-  return opts.next({
-    ctx: {
-      user: opts.ctx.user
-    }
-  });
+  return next({ ctx: { user: ctx.user } });
+});
+
+export const adminProcedure = protectedProcedure.use(({ ctx, next }) => {
+  if (ctx.user.role !== 'admin') {
+    throw new TRPCError({ code: 'FORBIDDEN', message: 'Admins only' });
+  }
+  return next();
 });

@@ -1,80 +1,58 @@
-import { z } from 'zod';
 import { TRPCError } from '@trpc/server';
-import { router, publicProcedure, protectedProcedure } from '../trpc.js';
-import type { Item } from '../types.js';
+import { z } from 'zod';
+import { store } from '../store.js';
+import { adminProcedure, protectedProcedure, publicProcedure, router } from '../trpc.js';
 
-const itemsStore: Map<string, Item> = new Map([
-  [
-    '1',
-    {
-      id: '1',
-      title: 'Master End-to-End Type Safety',
-      description: 'Eliminate manual API contracts and schema mismatches forever',
-      status: 'completed',
-      createdAt: new Date().toISOString()
-    }
-  ],
-  [
-    '2',
-    {
-      id: '2',
-      title: 'Setup Standalone HTTP Server',
-      description: 'Deploy zero-dependency standalone Node.js adapter',
-      status: 'in_progress',
-      createdAt: new Date().toISOString()
-    }
-  ]
-]);
+export const statusSchema = z.enum(['todo', 'doing', 'done']);
+
+const itemOutput = z.object({
+  id: z.string(),
+  title: z.string(),
+  status: statusSchema,
+  ownerId: z.string(),
+  createdAt: z.date(),
+});
+
+function getOrThrow(id: string) {
+  const item = store.get(id);
+  if (!item) throw new TRPCError({ code: 'NOT_FOUND', message: `Item ${id} not found` });
+  return item;
+}
 
 export const itemsRouter = router({
-  list: publicProcedure.query(async () => {
-    return Array.from(itemsStore.values());
-  }),
+  list: publicProcedure
+    .input(z.object({ status: statusSchema.optional() }).optional())
+    .query(({ input }) => store.list(input ?? {})),
 
   byId: publicProcedure
-    .input(z.object({ id: z.string() }))
-    .query(async ({ input }) => {
-      const item = itemsStore.get(input.id);
-      if (!item) {
-        throw new TRPCError({
-          code: 'NOT_FOUND',
-          message: `Item with id ${input.id} not found`
-        });
-      }
-      return item;
-    }),
+    .input(z.object({ id: z.string().min(1) }))
+    .output(itemOutput)
+    .query(({ input }) => getOrThrow(input.id)),
 
-  create: publicProcedure
+  create: protectedProcedure
     .input(
       z.object({
-        title: z.string().min(2).max(100),
-        description: z.string().max(500).default(''),
-        status: z.enum(['pending', 'in_progress', 'completed']).default('pending')
-      })
+        title: z.string().trim().min(2).max(100),
+        status: statusSchema.default('todo'),
+      }),
     )
-    .mutation(async ({ input }) => {
-      const id = String(itemsStore.size + 1);
-      const newItem: Item = {
-        id,
-        title: input.title,
-        description: input.description,
-        status: input.status,
-        createdAt: new Date().toISOString()
-      };
-      itemsStore.set(id, newItem);
-      return newItem;
+    .mutation(({ input, ctx }) => store.create({ ...input, ownerId: ctx.user.id })),
+
+  setStatus: protectedProcedure
+    .input(z.object({ id: z.string(), status: statusSchema }))
+    .mutation(({ input, ctx }) => {
+      const item = getOrThrow(input.id);
+      if (item.ownerId !== ctx.user.id && ctx.user.role !== 'admin') {
+        throw new TRPCError({ code: 'FORBIDDEN', message: 'Not your item' });
+      }
+      return store.update(input.id, { status: input.status })!;
     }),
 
-  delete: protectedProcedure
+  delete: adminProcedure
     .input(z.object({ id: z.string() }))
-    .mutation(async ({ input }) => {
-      if (!itemsStore.has(input.id)) {
-        throw new TRPCError({
-          code: 'NOT_FOUND',
-          message: `Item with id ${input.id} not found`
-        });
-      }
-      itemsStore.delete(input.id);
-      return { success: true, deletedId: input.id };
-    })
+    .mutation(({ input }) => {
+      getOrThrow(input.id);
+      store.delete(input.id);
+      return { id: input.id, deleted: true as const };
+    }),
 });

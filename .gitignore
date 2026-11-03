@@ -1,5 +1,31 @@
-node_modules
-dist
-*.log
+# Node / TypeScript
+node_modules/
+dist/
+build/
+out-tsc/
+coverage/
+.angular/cache
+.next/
+.nuxt/
+.turbo/
+*.tsbuildinfo
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Editors and OS
+.idea/
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+*.swp
 .DS_Store
+Thumbs.db
+
+# Env files (never commit secrets)
 .env
+.env.*
+!.env.example
+
+# Logs
+*.log

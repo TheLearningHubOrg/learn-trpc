@@ -1,13 +1,17 @@
-import { createHTTPServer } from '@trpc/server/adapters/standalone';
-import { appRouter } from './routers/index.js';
-import { createContext } from './context.js';
+import { createApp } from './app.js';
 
-const port = Number(process.env.PORT) || 4000;
+const port = Number(process.env.PORT ?? 8080);
+const host = process.env.HOST ?? '0.0.0.0';
 
-const server = createHTTPServer({
-  router: appRouter,
-  createContext
+const server = createApp();
+server.listen(port, host, () => {
+  console.log(`[learn-trpc] listening on http://${host}:${port} (tRPC at /trpc)`);
 });
 
-server.listen(port);
-console.log(`[learn-trpc] Standalone tRPC server listening on http://localhost:${port}`);
+// Containers send SIGTERM; finish in-flight requests before exiting.
+for (const signal of ['SIGTERM', 'SIGINT'] as const) {
+  process.on(signal, () => {
+    server.close(() => process.exit(0));
+    setTimeout(() => process.exit(1), 10_000).unref();
+  });
+}
